@@ -1,0 +1,42 @@
+diff --git a/.gitignore b/.gitignore
+index 9023232..ee15caa 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -30,3 +30,4 @@ CMakeFiles
+ cmake_install.cmake
+ *.a
+ tags
++*~
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 4dfceb4..9b53b13 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -78,7 +78,7 @@ libsox_la_SOURCES += \
+ 	remix.c repeat.c reverb.c reverse.c silence.c sinc.c skeleff.c \
+ 	speed.c splice.c stat.c stats.c stretch.c swap.c \
+ 	synth.c tempo.c tremolo.c trim.c upsample.c vad.c vol.c \
+-	ignore-warning.h
++	ignore-warning.h limiter.c
+ if HAVE_PNG
+     libsox_la_SOURCES += spectrogram.c
+ endif
+diff --git a/src/effects.h b/src/effects.h
+index 54ab855..37458cb 100644
+--- a/src/effects.h
++++ b/src/effects.h
+@@ -48,6 +48,7 @@
+ #ifdef HAVE_LADSPA_H
+   EFFECT(ladspa)
+ #endif
++  EFFECT(limiter)
+   EFFECT(loudness)
+   EFFECT(lowpass)
+   EFFECT(mcompand)
+diff --git a/src/limiter.c b/src/limiter.c
+new file mode 120000
+index 0000000..f42de53
+--- /dev/null
++++ b/src/limiter.c
+@@ -0,0 +1 @@
++/home/guido/projects/sox-limiter/limiter.c
+\ No newline at end of file
