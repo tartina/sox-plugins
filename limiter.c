@@ -92,8 +92,8 @@ static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t s
 
 	if (previous_sample <= 0 && *ibuf >=0) return ibuf;
 
-	for (zero_crossing = ibuf, i = 0; i < size - 1; i++, zero_crossing++)
-		if ((*zero_crossing) <= 0 && *(zero_crossing + 1) >=0) break;
+	for (zero_crossing = ibuf, i = 0; i < size - NUMBER_OF_CHANNELS; i++, zero_crossing += NUMBER_OF_CHANNELS)
+		if ((*zero_crossing) <= 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) break;
 
 	return zero_crossing;
 }
