@@ -85,35 +85,36 @@ static int start(sox_effect_t * effp)
   return SOX_EOF;
 }
 
-static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t size, sox_sample_t previous_sample)
+static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t size)
 {
-	unsigned i;
+	size_t i;
 	sox_sample_t * zero_crossing = NULL;
 
-	if (previous_sample <= 0 && *ibuf >=0) return ibuf;
-
-	for (zero_crossing = ibuf, i = 0; i < size - NUMBER_OF_CHANNELS; i++, zero_crossing += NUMBER_OF_CHANNELS)
-		if ((*zero_crossing) <= 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) break;
+	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS; i < size / NUMBER_OF_CHANNELS; i++, zero_crossing += NUMBER_OF_CHANNELS)
+	{
+		if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) break;
+	}
 
 	return zero_crossing;
 }
 
-static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, size_t size, double limit)
+static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_sample_t *end, double limit)
 {
-	unsigned i;
 	sox_sample_t * overflow = NULL;
 	sox_sample_t * max = NULL;
 	double current_value = 0.0f, max_value = 0.0f;
 
 	limit = abs(limit);
 
-	for (overflow = ibuf, i = 0; i < size; overflow++, i++) {
+	for (overflow = ibuf; overflow < end; overflow++) {
 		current_value = abs(*overflow);
 		if (current_value > limit && current_value > max_value) {
 			max_value = current_value;
 			max = overflow;
 		} 
 	}
+	
+	return max;
 }
 
 static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obuf,
@@ -122,9 +123,25 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
 	limiter_t * l = (limiter_t *) effp->priv;
 	size_t length = (*isamp > *osamp) ? *osamp : *isamp;
 	size_t idone, odone;
+	sox_sample_t * zero_cross;
+	sox_sample_t * max;
+	double factor;
 
-	for (idone = 0, odone = 0; idone < length; ibuf += NUMBER_OF_CHANNELS)
+	idone = odone = 0;
+
+	while (idone < length)
 	{
+		zero_cross = find_next_zero_crossing(ibuf, (*isamp) - idone);
+		if (! zero_cross) break;
+		max = find_max_overflow(ibuf, zero_cross, l->threshold);
+
+		if (max) { /* We have to limit */
+			/* Calculate factor */
+			factor = l->threshold / (*max);
+			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = (*ibuf) * factor;
+		} else { /* Copy input to output */
+			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = *ibuf;
+		}
 	}
 
   *isamp = idone; *osamp = odone;
@@ -133,7 +150,6 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
 
 static int drain(sox_effect_t * effp, sox_sample_t *obuf, size_t *osamp)
 {
-	limiter_t * l = (limiter_t *) effp->priv;
   return SOX_EOF;
 }
 
@@ -153,7 +169,7 @@ static int lsx_kill(sox_effect_t * effp)
 sox_effect_handler_t const * lsx_limiter_effect_fn(void)
 {
   static sox_effect_handler_t handler = {
-    "limiter", LIMITER_USAGE, SOX_EFF_MCHAN | SOX_EFF_GAIN,
+    "limiter", LIMITER_USAGE, SOX_EFF_MCHAN | SOX_EFF_GAIN | SOX_EFF_ALPHA,
     getopts, start, flow, drain, stop, lsx_kill, sizeof(limiter_t)
   };
   return &handler;
