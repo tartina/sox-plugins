@@ -29,60 +29,42 @@
 #define CO_DB(v) (20.0f * log10f(v))
 
 typedef struct {
-  double threshold;           /* Max level */
-  double gain;                /* Current gain of all channel */
-  sox_sample_t *delay_buf;    /* Old samples, used for delay processing */
-  ptrdiff_t delay_buf_size;   /* Size of delay_buf in samples */
-  ptrdiff_t delay_buf_index;  /* Index into delay_buf */
-	ptrdiff_t zero_cross_start; /* Start of waveform: between start and end we apply gain */
-	ptrdiff_t zero_cross_end;   /* End of waveform */
-  ptrdiff_t delay_buf_cnt;    /* No. of active entries in delay_buf */
-  int delay_buf_full;         /* Shows buffer situation (important for drain) */
+  sox_sample_t threshold;       /* Max level */
 } limiter_t;
 
 static int getopts(sox_effect_t * effp, int argc, char * * argv)
 {
+	float threshold;
 	limiter_t * l = (limiter_t *) effp->priv;
 
-	if (argc < 2) return lsx_usage(effp);
+	--argc, ++argv;
+	if (argc != 1)  return lsx_usage(effp);
 
-  if (sscanf(argv[1], "%lf", &l->threshold) != 1) {
+  if (sscanf(argv[0], "%f", &threshold) != 1) {
     lsx_fail("syntax error trying to read threshold");
     return SOX_EOF;
 	}
 
-	if (l->threshold > 0 || l->threshold < -40) {
+	if (threshold > 0 || threshold < -40) {
     lsx_fail("threshold cannot be > 0 or < -40");
     return SOX_EOF;	
 	}
 
 	/* Convert db to linear value */
-	l->threshold = DB_CO(l->threshold);
+	l->threshold = DB_CO(threshold) * SOX_SAMPLE_MAX;
 
   return SOX_SUCCESS;
 }
 
 static int start(sox_effect_t * effp)
 {
-	limiter_t * l = (limiter_t *) effp->priv;
-
 	/* This limiter works only with 2 channels */
 	if (effp->out_signal.channels != NUMBER_OF_CHANNELS) {
 		lsx_fail("Only 2 channels");
 		return SOX_EOF;
 	}
 
-	/* Allocate lookahead buffer */
-  l->delay_buf_size = LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
-  if (l->delay_buf_size > 0)
-    if ( (l->delay_buf = lsx_calloc((size_t)l->delay_buf_size, sizeof(*l->delay_buf))) ) {
-		  l->delay_buf_index = 0;
-  		l->delay_buf_cnt = 0;
-  		l->delay_buf_full= 0;
-			return SOX_SUCCESS;
-		}
-
-  return SOX_EOF;
+  return SOX_SUCCESS;
 }
 
 static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t size)
@@ -98,13 +80,11 @@ static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t s
 	return zero_crossing;
 }
 
-static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_sample_t *end, double limit)
+static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_sample_t *end, sox_sample_t limit)
 {
 	sox_sample_t * overflow = NULL;
 	sox_sample_t * max = NULL;
-	double current_value = 0.0f, max_value = 0.0f;
-
-	limit = abs(limit);
+	sox_sample_t current_value = 0, max_value = 0;
 
 	for (overflow = ibuf; overflow < end; overflow++) {
 		current_value = abs(*overflow);
@@ -137,8 +117,8 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
 
 		if (max) { /* We have to limit */
 			/* Calculate factor */
-			factor = l->threshold / (*max);
-			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = (*ibuf) * factor;
+			factor = (double)l->threshold / (double)(*max);
+			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = (double)(*ibuf) * factor;
 		} else { /* Copy input to output */
 			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = *ibuf;
 		}
@@ -148,16 +128,8 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
   return SOX_SUCCESS;
 }
 
-static int drain(sox_effect_t * effp, sox_sample_t *obuf, size_t *osamp)
-{
-  return SOX_EOF;
-}
-
 static int stop(sox_effect_t * effp)
 {
-	limiter_t * l = (limiter_t *) effp->priv;
-
-  free(l->delay_buf);
   return SOX_SUCCESS;
 }
 
@@ -170,7 +142,7 @@ sox_effect_handler_t const * lsx_limiter_effect_fn(void)
 {
   static sox_effect_handler_t handler = {
     "limiter", LIMITER_USAGE, SOX_EFF_MCHAN | SOX_EFF_GAIN | SOX_EFF_ALPHA,
-    getopts, start, flow, drain, stop, lsx_kill, sizeof(limiter_t)
+    getopts, start, flow, NULL, stop, lsx_kill, sizeof(limiter_t)
   };
   return &handler;
 }
