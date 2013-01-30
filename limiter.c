@@ -21,7 +21,6 @@
 
 #include "sox_i.h"
 
-#define LOOKAHEAD_TIME .025f
 #define LIMITER_USAGE "threshold (db)"
 #define NUMBER_OF_CHANNELS 2
 
@@ -72,7 +71,9 @@ static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t s
 	size_t i;
 	sox_sample_t * zero_crossing = NULL;
 
-	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS; i < size / NUMBER_OF_CHANNELS; i++, zero_crossing += NUMBER_OF_CHANNELS)
+	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
+	  i < size / NUMBER_OF_CHANNELS;
+	  i+= NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS)
 	{
 		if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) break;
 	}
@@ -117,7 +118,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
 
 		if (max) { /* We have to limit */
 			/* Calculate factor */
-			factor = (double)l->threshold / (double)(*max);
+			factor = (double)l->threshold / (double)abs(*max);
 			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = (double)(*ibuf) * factor;
 		} else { /* Copy input to output */
 			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = *ibuf;
