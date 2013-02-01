@@ -28,7 +28,8 @@
 #define CO_DB(v) (20.0f * log10f(v))
 
 typedef struct {
-  sox_sample_t threshold;       /* Max level */
+  sox_sample_t threshold; /* Max level */
+	double gain;						/* Current gain */
 } limiter_t;
 
 static int getopts(sox_effect_t * effp, int argc, char * * argv)
@@ -70,15 +71,19 @@ static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t s
 {
 	size_t i;
 	sox_sample_t * zero_crossing = NULL;
+	sox_sample_t * result = NULL;
 
 	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
 	  i < size / NUMBER_OF_CHANNELS;
 	  i+= NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS)
 	{
-		if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) break;
+		if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) {
+			result = zero_crossing;
+			break;
+		}
 	}
 
-	return zero_crossing;
+	return result;
 }
 
 static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_sample_t *end, sox_sample_t limit)
@@ -94,7 +99,7 @@ static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_samp
 			max = overflow;
 		} 
 	}
-	
+
 	return max;
 }
 
@@ -126,6 +131,8 @@ static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obu
 	}
 
   *isamp = idone; *osamp = odone;
+	l->gain = factor;
+
   return SOX_SUCCESS;
 }
 
