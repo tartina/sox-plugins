@@ -27,131 +27,154 @@
 #define DB_CO(g) ((g) > -90.0f ? powf(10.0f, (g) * 0.05f) : 0.0f)
 #define CO_DB(v) (20.0f * log10f(v))
 
-typedef struct {
-  sox_sample_t threshold; /* Max level */
-	double gain;						/* Current gain */
+typedef struct
+{
+  sox_sample_t threshold;	/* Max level */
+  double gain;			/* Current gain */
 } limiter_t;
 
-static int getopts(sox_effect_t * effp, int argc, char * * argv)
+static int
+getopts (sox_effect_t * effp, int argc, char * *argv)
 {
-	float threshold;
-	limiter_t * l = (limiter_t *) effp->priv;
+  float threshold;
+  limiter_t *l = (limiter_t *) effp->priv;
 
-	--argc, ++argv;
-	if (argc != 1)  return lsx_usage(effp);
+  --argc, ++argv;
+  if (argc != 1)
+    return lsx_usage (effp);
 
-  if (sscanf(argv[0], "%f", &threshold) != 1) {
-    lsx_fail("syntax error trying to read threshold");
+  if (sscanf (argv[0], "%f", &threshold) != 1)
+  {
+    lsx_fail ("syntax error trying to read threshold");
     return SOX_EOF;
-	}
+  }
 
-	if (threshold > 0 || threshold < -40) {
-    lsx_fail("threshold cannot be > 0 or < -40");
-    return SOX_EOF;	
-	}
+  if (threshold > 0 || threshold < -40)
+  {
+    lsx_fail ("threshold cannot be > 0 or < -40");
+    return SOX_EOF;
+  }
 
-	/* Convert db to linear value */
-	l->threshold = DB_CO(threshold) * SOX_SAMPLE_MAX;
-
-  return SOX_SUCCESS;
-}
-
-static int start(sox_effect_t * effp)
-{
-	/* This limiter works only with 2 channels */
-	if (effp->out_signal.channels != NUMBER_OF_CHANNELS) {
-		lsx_fail("Only 2 channels");
-		return SOX_EOF;
-	}
+  /* Convert db to linear value */
+  l->threshold = DB_CO (threshold) * SOX_SAMPLE_MAX;
 
   return SOX_SUCCESS;
 }
 
-static sox_sample_t * find_next_zero_crossing(const sox_sample_t *ibuf, size_t size)
+static int
+start (sox_effect_t * effp)
 {
-	size_t i;
-	sox_sample_t * zero_crossing = NULL;
-	sox_sample_t * result = NULL;
-
-	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
-	  i < size / NUMBER_OF_CHANNELS;
-	  i+= NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS)
-	{
-		if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >=0) {
-			result = zero_crossing;
-			break;
-		}
-	}
-
-	return result;
-}
-
-static sox_sample_t * find_max_overflow(const sox_sample_t *ibuf, const sox_sample_t *end, sox_sample_t limit)
-{
-	sox_sample_t * overflow = NULL;
-	sox_sample_t * max = NULL;
-	sox_sample_t current_value = 0, max_value = 0;
-
-	for (overflow = ibuf; overflow < end; overflow++) {
-		current_value = abs(*overflow);
-		if (current_value > limit && current_value > max_value) {
-			max_value = current_value;
-			max = overflow;
-		} 
-	}
-
-	return max;
-}
-
-static int flow(sox_effect_t * effp, const sox_sample_t *ibuf, sox_sample_t *obuf,
-                    size_t *isamp, size_t *osamp)
-{
-	limiter_t * l = (limiter_t *) effp->priv;
-	size_t length = (*isamp > *osamp) ? *osamp : *isamp;
-	size_t idone, odone;
-	sox_sample_t * zero_cross;
-	sox_sample_t * max;
-	double factor;
-
-	idone = odone = 0;
-
-	while (idone < length)
-	{
-		zero_cross = find_next_zero_crossing(ibuf, (*isamp) - idone);
-		if (! zero_cross) break;
-		max = find_max_overflow(ibuf, zero_cross, l->threshold);
-
-		if (max) { /* We have to limit */
-			/* Calculate factor */
-			factor = (double)l->threshold / (double)abs(*max);
-			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = (double)(*ibuf) * factor;
-		} else { /* Copy input to output */
-			for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++) *obuf = *ibuf;
-		}
-	}
-
-  *isamp = idone; *osamp = odone;
-	l->gain = factor;
+  /* This limiter works only with 2 channels */
+  if (effp->out_signal.channels != NUMBER_OF_CHANNELS)
+  {
+    lsx_fail ("Only 2 channels");
+    return SOX_EOF;
+  }
 
   return SOX_SUCCESS;
 }
 
-static int stop(sox_effect_t * effp)
+static sox_sample_t *
+find_next_zero_crossing (const sox_sample_t * ibuf, size_t size)
+{
+  size_t i;
+  sox_sample_t *zero_crossing = NULL;
+  sox_sample_t *result = NULL;
+
+  for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
+       i < size / NUMBER_OF_CHANNELS;
+       i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS)
+  {
+    if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >= 0)
+    {
+      result = zero_crossing;
+      break;
+    }
+  }
+
+  return result;
+}
+
+static sox_sample_t *
+find_max_overflow (const sox_sample_t * ibuf, const sox_sample_t * end,
+		   sox_sample_t limit)
+{
+  sox_sample_t *overflow = NULL;
+  sox_sample_t *max = NULL;
+  sox_sample_t current_value = 0, max_value = 0;
+
+  for (overflow = ibuf; overflow < end; overflow++)
+  {
+    current_value = abs (*overflow);
+    if (current_value > limit && current_value > max_value)
+    {
+      max_value = current_value;
+      max = overflow;
+    }
+  }
+
+  return max;
+}
+
+static int
+flow (sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf,
+      size_t * isamp, size_t * osamp)
+{
+  limiter_t *l = (limiter_t *) effp->priv;
+  size_t length = (*isamp > *osamp) ? *osamp : *isamp;
+  size_t idone, odone;
+  sox_sample_t *zero_cross;
+  sox_sample_t *max;
+  double factor;
+
+  idone = odone = 0;
+
+  while (idone < length)
+  {
+    zero_cross = find_next_zero_crossing (ibuf, (*isamp) - idone);
+    if (!zero_cross)
+      break;
+    max = find_max_overflow (ibuf, zero_cross, l->threshold);
+
+    if (max)
+    {				/* We have to limit */
+      /* Calculate factor */
+      factor = (double) l->threshold / (double) abs (*max);
+      for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++)
+	*obuf = (double) (*ibuf) * factor;
+    }
+    else
+    {				/* Copy input to output */
+      for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++)
+	*obuf = *ibuf;
+    }
+  }
+
+  *isamp = idone;
+  *osamp = odone;
+  l->gain = factor;
+
+  return SOX_SUCCESS;
+}
+
+static int
+stop (sox_effect_t * effp)
 {
   return SOX_SUCCESS;
 }
 
-static int lsx_kill(sox_effect_t * effp)
+static int
+lsx_kill (sox_effect_t * effp)
 {
   return SOX_SUCCESS;
 }
 
-sox_effect_handler_t const * lsx_limiter_effect_fn(void)
+sox_effect_handler_t const *
+lsx_limiter_effect_fn (void)
 {
   static sox_effect_handler_t handler = {
     "limiter", LIMITER_USAGE, SOX_EFF_MCHAN | SOX_EFF_GAIN | SOX_EFF_ALPHA,
-    getopts, start, flow, NULL, stop, lsx_kill, sizeof(limiter_t)
+    getopts, start, flow, NULL, stop, lsx_kill, sizeof (limiter_t)
   };
   return &handler;
 }
-
