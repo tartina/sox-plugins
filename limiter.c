@@ -21,6 +21,7 @@
 
 #include "sox_i.h"
 
+#define LOOKAHEAD_TIME .05f	/* in seconds */
 #define LIMITER_USAGE "threshold (db)"
 #define NUMBER_OF_CHANNELS 2
 
@@ -31,6 +32,9 @@ typedef struct
 {
   sox_sample_t threshold;	/* Max level */
   double gain;			/* Current gain */
+  sox_sample_t *buffer;		/* Audio buffer */
+  size_t buffer_size;
+  size_t buffer_active;
 } limiter_t;
 
 static int
@@ -64,6 +68,8 @@ getopts (sox_effect_t * effp, int argc, char * *argv)
 static int
 start (sox_effect_t * effp)
 {
+  limiter_t *l = (limiter_t *) effp->priv;
+
   /* This limiter works only with 2 channels */
   if (effp->out_signal.channels != NUMBER_OF_CHANNELS)
   {
@@ -71,7 +77,16 @@ start (sox_effect_t * effp)
     return SOX_EOF;
   }
 
-  return SOX_SUCCESS;
+  /* Allocate the delay buffer */
+  l->buffer_size =
+    LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
+  l->buffer_active = 0;
+  if (l->buffer_size > 0)
+    if ((l->buffer =
+	 lsx_calloc ((size_t) l->buffer_size, sizeof (sox_sample_t))))
+      return SOX_SUCCESS;
+
+  return SOX_EOF;
 }
 
 static sox_sample_t *
@@ -122,35 +137,85 @@ flow (sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf,
 {
   limiter_t *l = (limiter_t *) effp->priv;
   size_t length = (*isamp > *osamp) ? *osamp : *isamp;
-  size_t idone, odone;
+  size_t idone, odone, remaining, i;
   sox_sample_t *zero_cross;
-  sox_sample_t *max;
+  sox_sample_t *max, *buffer_max;
   double factor;
+
+  /* Safe control */
+  if (l->buffer_active > *osamp)
+    return SOX_ENOTSUP;
 
   idone = odone = 0;
 
-  while (idone < length)
+  remaining = *isamp - idone;
+  zero_cross = find_next_zero_crossing (ibuf, remaining);
+
+  while (idone < length && odone < length && zero_cross)
   {
-    zero_cross = find_next_zero_crossing (ibuf, (*isamp) - idone);
-    if (!zero_cross)
-      break;
     max = find_max_overflow (ibuf, zero_cross, l->threshold);
+
+    /* Process our buffer: find max */
+    if (l->buffer_active > 0)
+    {
+      buffer_max =
+	find_max_overflow (l->buffer, l->buffer + l->buffer_size,
+			   l->threshold);
+      /* Find max of max */
+      if (buffer_max)
+	if (abs (*buffer_max) > abs (*max))
+	  max = buffer_max;
+    }
 
     if (max)
     {				/* We have to limit */
+
       /* Calculate factor */
       factor = (double) l->threshold / (double) abs (*max);
-      for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++)
+
+      /* Process our buffer */
+      if (l->buffer_active > 0)
+      {
+	for (i = 0; odone < length && i < l->buffer_active;
+	     obuf++, odone++, i++)
+	  *obuf = (double) (l->buffer[i]) * factor;
+      }
+
+      /* Process input buffer */
+      for (; ibuf < zero_cross && idone < length && odone < length;
+	   ibuf++, obuf++, idone++, odone++)
 	*obuf = (double) (*ibuf) * factor;
     }
     else
     {				/* Copy input to output */
-      for (; ibuf < zero_cross; ibuf++, obuf++, idone++, odone++)
+
+      /* Process our buffer */
+      if (l->buffer_active > 0)
+      {
+	for (i = 0; odone < length && i < l->buffer_active;
+	     obuf++, odone++, i++)
+	  *obuf = l->buffer[i];
+      }
+
+      /* Process input buffer */
+      for (; ibuf < zero_cross && idone < length && odone < length;
+	   ibuf++, obuf++, idone++, odone++)
 	*obuf = *ibuf;
     }
+
+    l->buffer_active = 0;
+
+    remaining = *isamp - idone;
+    zero_cross = find_next_zero_crossing (ibuf, remaining);
   }
 
-  *isamp = idone;
+  /* Copy ibuf to buffer for next run */
+  if (remaining > 0 && remaining < l->buffer_size)
+  {
+    memcpy (l->buffer, ibuf, remaining);
+    l->buffer_active = remaining;
+  }
+
   *osamp = odone;
   l->gain = factor;
 
@@ -158,23 +223,45 @@ flow (sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf,
 }
 
 static int
+drain (sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
+{
+  size_t i;
+  limiter_t *l = (limiter_t *) effp->priv;
+
+  if (l->buffer_active < *osamp)
+  {
+    for (i = 0; i < l->buffer_active; i++, obuf++)
+      *obuf = (double) (l->buffer[i]) * l->gain;
+    return SOX_EOF;
+  }
+
+  return SOX_ENOTSUP;
+}
+
+static int
 stop (sox_effect_t * effp)
 {
+  limiter_t *l = (limiter_t *) effp->priv;
+
+  free (l->buffer);
+
   return SOX_SUCCESS;
 }
 
+/*
 static int
 lsx_kill (sox_effect_t * effp)
 {
   return SOX_SUCCESS;
 }
+*/
 
 sox_effect_handler_t const *
 lsx_limiter_effect_fn (void)
 {
   static sox_effect_handler_t handler = {
     "limiter", LIMITER_USAGE, SOX_EFF_MCHAN | SOX_EFF_GAIN | SOX_EFF_ALPHA,
-    getopts, start, flow, NULL, stop, lsx_kill, sizeof (limiter_t)
+    getopts, start, flow, drain, stop, NULL, sizeof (limiter_t)
   };
   return &handler;
 }
