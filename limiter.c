@@ -96,11 +96,14 @@ find_next_zero_crossing (const sox_sample_t * ibuf, size_t size)
   sox_sample_t *zero_crossing = NULL;
   sox_sample_t *result = NULL;
 
+  if (size == 0)
+    return NULL;
+
   for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
-       i < size / NUMBER_OF_CHANNELS;
+       i < (size / NUMBER_OF_CHANNELS);
        i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS)
   {
-    if ((*zero_crossing) < 0 && *(zero_crossing + NUMBER_OF_CHANNELS) >= 0)
+    if ((*zero_crossing) < 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0)
     {
       result = zero_crossing;
       break;
@@ -145,6 +148,10 @@ flow (sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf,
   /* Safe control */
   if (l->buffer_active > *osamp)
     return SOX_ENOTSUP;
+
+  length = (*isamp > *osamp) ? *osamp : *isamp;
+  if (l->buffer_active > 0 && l->buffer_active < length)
+    length = l->buffer_active;
 
   idone = odone = 0;
 
