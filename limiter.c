@@ -21,7 +21,7 @@
 
 #include "sox_i.h"
 
-#define LOOKAHEAD_TIME .1f	/* in seconds */
+#define LOOKAHEAD_TIME .2f	/* in seconds */
 #define LIMITER_USAGE "threshold (db)"
 #define NUMBER_OF_CHANNELS 2
 
