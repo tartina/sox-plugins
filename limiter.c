@@ -21,7 +21,7 @@
 
 #include "sox_i.h"
 
-#define LOOKAHEAD_TIME .05f	/* in seconds */
+#define LOOKAHEAD_TIME .1f	/* in seconds */
 #define LIMITER_USAGE "threshold (db)"
 #define NUMBER_OF_CHANNELS 2
 
@@ -143,7 +143,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 				l->gain = (double)l->threshold / (double)abs(*max);
 				for (; odone < *osamp && l->position < zero_cross;
 				     odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = (double)*(l->position) * l->gain;
+					*obuf = (double)(*l->position) * l->gain;
 			} else {
 				l->gain = 1.0f;
 				for (; odone < *osamp && l->position < zero_cross;
@@ -154,7 +154,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 		}
 	}
 
-	/* Process our buffer with in buffer */
+	/* Process our buffer with in buffer; there should be no zero cross in our buffer! */
 	if (l->buffer_active > 0) {
 		remaining = *isamp - idone;
 		zero_cross = find_next_zero_crossing(ibuf, remaining);
@@ -162,19 +162,23 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 			max = find_max_overflow(ibuf, zero_cross, l->threshold);
 			buffer_max = find_max_overflow(l->position, l->position + l->buffer_active, l->threshold);
 			/* Find max of max */
-			if (buffer_max && max)
-				if (abs(*buffer_max) > abs(*max))
+			if (buffer_max) {
+				if (max) {
+					if (abs(*buffer_max) > abs(*max))
+						max = buffer_max;
+				} else
 					max = buffer_max;
+			}
 
 			if (max) {
 				l->gain = (double)l->threshold / (double)abs(*max);
 				/* Process our buffer */
 				for (; odone < *osamp && l->position < l->position + l->buffer_active;
 				     odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = (double)*(l->position) * l->gain;
+					*obuf = (double)(*l->position) * l->gain;
 				/* Process in buffer */
-				for (; odone < *osamp && idone < *isamp; odone++, obuf++, idone++, ibuf++)
-					*obuf = (double)*ibuf * l->gain;
+				for (; odone < *osamp && idone < *isamp && ibuf < zero_cross; odone++, obuf++, idone++, ibuf++)
+					*obuf = (double)(*ibuf) * l->gain;
 			} else {
 				l->gain = 1.0f;
 				/* Process our buffer */
@@ -182,14 +186,13 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 				     odone++, l->position++, obuf++, l->buffer_active--)
 					*obuf = *(l->position);
 				/* Process in buffer */
-				for (; odone < *osamp && idone < *isamp; odone++, obuf++, idone++, ibuf++)
+				for (; odone < *osamp && idone < *isamp && ibuf < zero_cross; odone++, obuf++, idone++, ibuf++)
 					*obuf = *ibuf;
 			}
 		}
 
 		*isamp = idone;
 		*osamp = odone;
-		l->buffer_active = 0;
 		return SOX_SUCCESS;
 	}
 
@@ -211,6 +214,10 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 		remaining = *isamp - idone;
 		zero_cross = find_next_zero_crossing(ibuf, remaining);
 	}
+
+	/* Safe check */
+	if (l->buffer_active != 0 && idone < *isamp)
+		return SOX_ENOTSUP;
 
 	/* Copy ibuf to buffer for next run */
 	if (remaining < l->buffer_size && l->buffer_active == 0) {
