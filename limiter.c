@@ -81,6 +81,7 @@ static int start(sox_effect_t * effp)
 		if ((l->buffer = lsx_calloc((size_t) l->buffer_size, sizeof(sox_sample_t))))
 			return SOX_SUCCESS;
 
+	lsx_fail("Cannot allocate buffer");
 	return SOX_EOF;
 }
 
@@ -95,7 +96,7 @@ static sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t s
 
 	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS; i < (size / NUMBER_OF_CHANNELS);
 	     i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
-		if ((*zero_crossing) < 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0) {
+		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0) {
 			result = zero_crossing;
 			break;
 		}
@@ -129,8 +130,10 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 	sox_sample_t *max, *buffer_max;
 
 	/* Safe control */
-	if (l->buffer_active > *osamp)
-		return SOX_ENOTSUP;
+	if (l->buffer_active > *osamp) {
+		lsx_fail("Internal buffer too big");
+		return -SOX_ENOTSUP;
+	}
 
 	idone = odone = 0;
 
@@ -216,8 +219,10 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 	}
 
 	/* Safe check */
-	if (l->buffer_active != 0 && idone < *isamp)
-		return SOX_ENOTSUP;
+	if (l->buffer_active != 0 && idone < *isamp) {
+		lsx_fail("Can't save input data, buffer not empty");
+		return SOX_EOF;
+	}
 
 	/* Copy ibuf to buffer for next run */
 	if (remaining < l->buffer_size && l->buffer_active == 0) {
@@ -244,7 +249,8 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 		return SOX_EOF;
 	}
 
-	return SOX_ENOTSUP;
+	lsx_fail("Internal buffer too big in drain");
+	return -SOX_ENOTSUP;
 }
 
 static int stop(sox_effect_t * effp)
