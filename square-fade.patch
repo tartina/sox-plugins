@@ -1,0 +1,32 @@
+diff --git a/src/fade.c b/src/fade.c
+index 3cf4876..04ebfd7 100644
+--- a/src/fade.c
++++ b/src/fade.c
+@@ -19,6 +19,7 @@
+                                 * in given time. */
+ #define FADE_TRI        't'     /* Linear slope. */
+ #define FADE_PAR        'p'     /* Inverted parabola. */
++#define FADE_SQUARE     's'     /* Square. */
+ 
+ #include <string.h>
+ 
+@@ -58,7 +59,7 @@ static int sox_fade_getopts(sox_effect_t * effp, int argc, char **argv)
+      * string off for later computations.
+      */
+ 
+-    if (sscanf(argv[0], "%1[qhltp]", t_char))
++    if (sscanf(argv[0], "%1[qhltps]", t_char))
+     {
+         fade->in_fadetype = *t_char;
+         fade->out_fadetype = *t_char;
+@@ -370,6 +371,10 @@ static double fade_gain(uint64_t index, uint64_t range, int type)
+       retval = (1 - (1 - findex)  * (1 - findex));
+       break;
+ 
++    case FADE_SQUARE :             /* square */
++      retval = findex * findex;
++      break;
++
+     /* TODO: more fade curves? */
+     default :                  /* Error indicating wrong fade curve */
+       retval = -1.0;
