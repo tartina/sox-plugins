@@ -35,6 +35,7 @@ typedef struct {
 	size_t buffer_size;	/* Size of audio buffer */
 	sox_sample_t *position;	/* Audio buffer actual position */
 	size_t buffer_active;	/* Number of samples in audio buffer */
+	uint32_t actions;	/* Number of limiter actions */
 } limiter_t;
 
 static int getopts(sox_effect_t * effp, int argc, char * *argv)
@@ -73,6 +74,7 @@ static int start(sox_effect_t * effp)
 	}
 
 	l->gain = 1.0f;
+	l->actions = 0;
 
 	/* Allocate the delay buffer */
 	l->buffer_size = LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
@@ -94,8 +96,8 @@ static sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t s
 	if (size == 0)
 		return NULL;
 
-	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS; i < (size / NUMBER_OF_CHANNELS);
-	     i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
+	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
+	     i < (size / NUMBER_OF_CHANNELS); i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
 		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0) {
 			result = zero_crossing;
 			break;
@@ -143,14 +145,13 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 		while (zero_cross) {
 			max = find_max_overflow(l->buffer, zero_cross, l->threshold);
 			if (max) {
+				l->actions++;
 				l->gain = (double)l->threshold / (double)abs(*max);
-				for (; odone < *osamp && l->position < zero_cross;
-				     odone++, l->position++, obuf++, l->buffer_active--)
+				for (; odone < *osamp && l->position < zero_cross; odone++, l->position++, obuf++, l->buffer_active--)
 					*obuf = (double)(*l->position) * l->gain;
 			} else {
 				l->gain = 1.0f;
-				for (; odone < *osamp && l->position < zero_cross;
-				     odone++, l->position++, obuf++, l->buffer_active--)
+				for (; odone < *osamp && l->position < zero_cross; odone++, l->position++, obuf++, l->buffer_active--)
 					*obuf = *(l->position);
 			}
 			zero_cross = find_next_zero_crossing(l->position, l->buffer_active);
@@ -174,6 +175,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 			}
 
 			if (max) {
+				l->actions++;
 				l->gain = (double)l->threshold / (double)abs(*max);
 				/* Process our buffer */
 				for (; odone < *osamp && l->position < l->position + l->buffer_active;
@@ -205,6 +207,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 	while (idone < *isamp && odone < *osamp && zero_cross) {
 		max = find_max_overflow(ibuf, zero_cross, l->threshold);
 		if (max) {
+			l->actions++;
 			l->gain = (double)l->threshold / (double)abs(*max);
 			for (; ibuf < zero_cross && idone < *isamp && odone < *osamp; ibuf++, obuf++, idone++, odone++)
 				*obuf = (double)(*ibuf) * l->gain;
@@ -258,6 +261,8 @@ static int stop(sox_effect_t * effp)
 	limiter_t *l = (limiter_t *) effp->priv;
 
 	free(l->buffer);
+
+	lsx_report("We have lowered gain %u times", l->actions);
 
 	return SOX_SUCCESS;
 }
