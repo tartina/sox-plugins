@@ -1,0 +1,16 @@
+These are some additional plugins for SoX.
+
+Limiter is a hard limiter, it only works on 2 channel
+audio files. It divides the waveform in chunks by 
+searching for zero crossing points and applies the
+limiting to these chunks.
+
+Square fade is a patch for SoX fade engine that adds
+a square fade, which I like very much to fade the end of songs.
+
+SoX sources are needed to compile these additional plugins.
+You should add limiter.c to SoX src directory and apply
+the 2 patches provided.
+
+These plugins are very experimental (expecially limiter),
+use at your own risk.
