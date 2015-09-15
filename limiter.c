@@ -28,6 +28,11 @@
 #define DB_CO(g) ((g) > -90.0f ? powf(10.0f, (g) * 0.05f) : 0.0f)
 #define CO_DB(v) (20.0f * log10f(v))
 
+/* Define ZERO_CROSSING_CHECK_OTHER_CHANNELS if you want to check the other channel(s) for ZERO CROSSING detection */
+#define ZERO_CROSSING_CHECK_OTHER_CHANNELS
+/* If checking the other channels(s), they must be less than this values to be a ZERO CROSSING (-40 dB) */
+#define MAX_ZERO_CROSSING_VALUE (0.01f)
+
 typedef struct {
 	sox_sample_t threshold;	/* Max level */
 	double gain;		/* Current gain */
@@ -52,7 +57,7 @@ static int getopts(sox_effect_t * effp, int argc, char * *argv)
 		return SOX_EOF;
 	}
 
-	if (threshold > 0 || threshold < -40) {
+	if (threshold > 0.0f || threshold < -40.0f) {
 		lsx_fail("threshold cannot be > 0 or < -40");
 		return SOX_EOF;
 	}
@@ -87,11 +92,14 @@ static int start(sox_effect_t * effp)
 	return SOX_EOF;
 }
 
-static sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t size)
+static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t size)
 {
 	size_t i;
-	sox_sample_t *zero_crossing = NULL;
-	sox_sample_t *result = NULL;
+	const sox_sample_t *zero_crossing = NULL;
+	const sox_sample_t *result = NULL;
+#ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
+	const sox_sample_t *k = NULL; /* Pointer to check other channel(s) */
+#endif
 
 	if (size == 0)
 		return NULL;
@@ -99,6 +107,10 @@ static sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t s
 	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
 	     i < (size / NUMBER_OF_CHANNELS); i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
 		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0) {
+#ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
+			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; k++)
+				if (abs(*k) > MAX_ZERO_CROSSING_VALUE) continue;
+#endif
 			result = zero_crossing;
 			break;
 		}
@@ -107,10 +119,10 @@ static sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, size_t s
 	return result;
 }
 
-static sox_sample_t *find_max_overflow(const sox_sample_t * ibuf, const sox_sample_t * end, sox_sample_t limit)
+static const sox_sample_t *find_max_overflow(const sox_sample_t * ibuf, const sox_sample_t * end, sox_sample_t limit)
 {
-	sox_sample_t *overflow = NULL;
-	sox_sample_t *max = NULL;
+	const sox_sample_t *overflow = NULL;
+	const sox_sample_t *max = NULL;
 	sox_sample_t current_value = 0, max_value = 0;
 
 	for (overflow = ibuf; overflow < end; overflow++) {
@@ -128,8 +140,8 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 {
 	limiter_t *l = (limiter_t *) effp->priv;
 	size_t idone, odone, remaining;
-	sox_sample_t *zero_cross;
-	sox_sample_t *max, *buffer_max;
+	const sox_sample_t *zero_cross;
+	const sox_sample_t *max, *buffer_max;
 
 	/* Safe control */
 	if (l->buffer_active > *osamp) {
