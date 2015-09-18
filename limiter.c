@@ -18,12 +18,15 @@
 
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <stdlib.h>
 
 #include "sox_i.h"
 
-#define LOOKAHEAD_TIME .2f	/* in seconds */
+#define LOOKAHEAD_TIME 1.0f	/* in seconds */
 #define LIMITER_USAGE "threshold (db)"
-#define NUMBER_OF_CHANNELS 2
+#define NUMBER_OF_CHANNELS 2 /* TESTED ONLY WITH 2 CHANNELS */
 
 #define DB_CO(g) ((g) > -90.0f ? powf(10.0f, (g) * 0.05f) : 0.0f)
 #define CO_DB(v) (20.0f * log10f(v))
@@ -31,17 +34,156 @@
 /* Define ZERO_CROSSING_CHECK_OTHER_CHANNELS if you want to check the other channel(s) for ZERO CROSSING detection */
 #define ZERO_CROSSING_CHECK_OTHER_CHANNELS
 /* If checking the other channels(s), they must be less than this values to be a ZERO CROSSING (-40 dB) */
-#define MAX_ZERO_CROSSING_VALUE (0.01f)
+#define MAX_ZERO_CROSSING_VALUE (0.01f * SOX_SAMPLE_MAX)
+
+// Ring buffer
+typedef struct {
+	sox_sample_t *data;
+	size_t size;						/* Total size of buffer in samples */
+	size_t available;				/* Number of samples in the buffer */
+	size_t processed;				/* Number of sample already processede, must be < available */
+	sox_sample_t *position;	/* Audio buffer actual position */
+} ring_buffer_t;
 
 typedef struct {
 	sox_sample_t threshold;	/* Max level */
-	double gain;		/* Current gain */
-	sox_sample_t *buffer;	/* Audio buffer */
-	size_t buffer_size;	/* Size of audio buffer */
-	sox_sample_t *position;	/* Audio buffer actual position */
-	size_t buffer_active;	/* Number of samples in audio buffer */
-	uint32_t actions;	/* Number of limiter actions */
+	double gain;						/* Current gain */
+	ring_buffer_t *rbuffer;	/* Audio buffer */
+	uint32_t actions;				/* Number of limiter actions */
+	uint32_t slices;				/* Number of slices found by the zero crossing detector */
 } limiter_t;
+
+static ring_buffer_t *create_ring_buffer(const size_t requested_size /* in bytes */)
+{
+	int fd;
+	void *the_data, *address;
+	ring_buffer_t *the_buffer;
+	char file_name[] = "/tmp/lim-XXXXXX";
+
+	/* Try to map double size memory */
+	the_data = mmap(NULL, requested_size * 2, PROT_NONE,
+		MAP_PRIVATE|MAP_ANONYMOUS, -1, (off_t)0);
+
+	if (the_data == MAP_FAILED) return NULL;
+
+	fd = mkstemp(file_name);
+	if (fd <0) {
+		munmap(the_data, requested_size * 2);
+		return NULL;
+	}
+	if (ftruncate(fd, requested_size) < 0) {
+		munmap(the_data, requested_size * 2);
+		close(fd);
+		return NULL;
+	}
+
+	address = mmap(the_data, requested_size, PROT_READ|PROT_WRITE,
+		MAP_FIXED|MAP_SHARED, fd, (off_t)0);
+
+	if (address == MAP_FAILED) {
+		munmap(the_data, requested_size * 2);
+		close(fd);
+		return NULL;
+	}
+
+	the_data = address;
+
+	address = mmap(the_data + requested_size, requested_size, PROT_READ|PROT_WRITE,
+		MAP_FIXED|MAP_SHARED, fd, (off_t)0);
+	if (address == MAP_FAILED) {
+		close(fd);
+		munmap(the_data, requested_size);
+		return NULL;
+	}
+
+	close(fd);
+
+	the_buffer = (ring_buffer_t *) malloc(sizeof(ring_buffer_t));
+	if (the_buffer) {
+		the_buffer->data = (sox_sample_t *)the_data;
+		the_buffer->size = requested_size / sizeof(sox_sample_t);
+		the_buffer->available = 0;
+		the_buffer->processed = 0;
+		the_buffer->position = the_data;
+	} else munmap(the_data, requested_size * 2);
+
+	return the_buffer;
+}
+static void delete_ring_buffer(ring_buffer_t *buffer)
+{
+	munmap(buffer->data, buffer->size * 2 * sizeof(sox_sample_t));
+	free(buffer);
+}
+static int ring_buffer_write(ring_buffer_t* const buffer, const sox_sample_t *input, size_t count)
+{
+	sox_sample_t *destination;
+
+	if (count == 0) return 0; /* Nothing to do */
+	if (count > (buffer->size - buffer->available)) return -1;
+
+	destination = buffer->position + buffer->available * sizeof(sox_sample_t);
+	if (destination >= buffer->data + buffer->size * sizeof(sox_sample_t))
+		destination -= buffer->size * sizeof(sox_sample_t);
+	buffer->available += count;
+
+	memcpy(destination, input, count * sizeof(sox_sample_t));
+
+	return 0;
+}
+/*
+	Return the data pointer if we have count samples to read
+	It doesn't remove the data from the buffer
+*/
+static sox_sample_t *ring_buffer_read(const ring_buffer_t* const buffer, size_t count)
+{
+	if (count > buffer->available) return NULL;
+
+	return buffer->position;
+}
+/*
+	Remove count processed samples from the buffer
+*/
+static int ring_buffer_pop(ring_buffer_t* const buffer, size_t count)
+{
+	if (count > buffer->processed) return -1;
+	buffer->position += count * sizeof(sox_sample_t);
+	buffer->available -= count;
+	buffer->processed -= count;
+
+	if (buffer->position >= buffer->data + buffer->size * sizeof(sox_sample_t))
+		buffer->position -= buffer->size * sizeof(sox_sample_t);
+	return 0;
+}
+/*
+	Mark processed data
+*/
+static int ring_buffer_mark_processed(ring_buffer_t* const buffer, size_t count)
+{
+	if (count > (buffer->available - buffer->processed)) return -1;
+	buffer->processed += count;
+	return 0;
+}
+/*
+	Get free buffer size
+*/
+static size_t ring_buffer_get_free(const ring_buffer_t* const buffer)
+{
+	return buffer->size - buffer->available;
+}
+/*
+	Get start pointer of unprocessed data
+*/
+static sox_sample_t *ring_buffer_get_start_unprocessed(const ring_buffer_t* const buffer)
+{
+	return buffer->position + buffer->processed * sizeof(sox_sample_t);
+}
+/*
+	Get unprocessed buffer size
+*/
+static size_t ring_buffer_get_unprocessed(const ring_buffer_t* const buffer)
+{
+	return buffer->available - buffer->processed;
+}
 
 static int getopts(sox_effect_t * effp, int argc, char * *argv)
 {
@@ -70,22 +212,36 @@ static int getopts(sox_effect_t * effp, int argc, char * *argv)
 
 static int start(sox_effect_t * effp)
 {
+	size_t buffer_size, pagesize, real_size;
+	unsigned int reminder;
+
 	limiter_t *l = (limiter_t *) effp->priv;
 
 	/* This limiter works only with 2 channels */
 	if (effp->out_signal.channels != NUMBER_OF_CHANNELS) {
-		lsx_fail("Only 2 channels");
+		lsx_fail("This limiter works only with NUMBER_OF_CHANNELS channels audio");
 		return SOX_EOF;
 	}
 
 	l->gain = 1.0f;
 	l->actions = 0;
+	l->slices = 0;
 
-	/* Allocate the delay buffer */
-	l->buffer_size = LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
-	l->buffer_active = 0;
-	if (l->buffer_size > 0)
-		if ((l->buffer = lsx_calloc((size_t) l->buffer_size, sizeof(sox_sample_t))))
+	/* Allocate the lookahead buffer */
+	buffer_size = LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
+
+	pagesize = (size_t) sysconf(_SC_PAGESIZE);
+	real_size = buffer_size * sizeof(sox_sample_t);
+
+	/* Check if requested_size is multiple of pagesize and sizeof(sox_sample_t) */
+	if ((reminder = real_size % pagesize))
+		real_size += pagesize - reminder;
+
+	if ((reminder = real_size % (sizeof(sox_sample_t) * NUMBER_OF_CHANNELS) ))
+		return SOX_EOF;
+
+	if (buffer_size > 0)
+		if ((l->rbuffer = create_ring_buffer(real_size)))
 			return SOX_SUCCESS;
 
 	lsx_fail("Cannot allocate buffer");
@@ -99,23 +255,31 @@ static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, si
 	const sox_sample_t *result = NULL;
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
 	const sox_sample_t *k = NULL; /* Pointer to check other channel(s) */
+	unsigned short fake = 0;
 #endif
 
-	if (size == 0)
-		return NULL;
+	if (size == 0) return NULL;
 
 	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
 	     i < (size / NUMBER_OF_CHANNELS); i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
-		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) >= 0) {
+		if ((*zero_crossing) < 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) > 0) {
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
-			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; k++)
-				if (abs(*k) > MAX_ZERO_CROSSING_VALUE) continue;
+			fake = 0;
+			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; k++) {
+				if (abs(*k) > MAX_ZERO_CROSSING_VALUE) {
+					fake = 1;
+					break;
+				}
+			}
+			if (!fake) {
 #endif
 			result = zero_crossing;
 			break;
+#ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
+			}
+#endif
 		}
 	}
-
 	return result;
 }
 
@@ -136,145 +300,91 @@ static const sox_sample_t *find_max_overflow(const sox_sample_t * ibuf, const so
 	return max;
 }
 
-static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf, size_t * isamp, size_t * osamp)
+static void process_our_buffer(ring_buffer_t* const buffer, limiter_t* const l)
 {
-	limiter_t *l = (limiter_t *) effp->priv;
-	size_t idone, odone, remaining;
 	const sox_sample_t *zero_cross;
-	const sox_sample_t *max, *buffer_max;
+	const sox_sample_t *max;
+	sox_sample_t *index;
 
-	/* Safe control */
-	if (l->buffer_active > *osamp) {
-		lsx_fail("Internal buffer too big");
-		return -SOX_ENOTSUP;
-	}
-
-	idone = odone = 0;
-
-	/* Process our buffer */
-	if (l->buffer_active > 0) {
-		zero_cross = find_next_zero_crossing(l->position, l->buffer_active);
-		while (zero_cross) {
-			max = find_max_overflow(l->buffer, zero_cross, l->threshold);
-			if (max) {
-				l->actions++;
-				l->gain = (double)l->threshold / (double)abs(*max);
-				for (; odone < *osamp && l->position < zero_cross; odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = (double)(*l->position) * l->gain;
-			} else {
-				l->gain = 1.0f;
-				for (; odone < *osamp && l->position < zero_cross; odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = *(l->position);
-			}
-			zero_cross = find_next_zero_crossing(l->position, l->buffer_active);
-		}
-	}
-
-	/* Process our buffer with in buffer; there should be no zero cross in our buffer! */
-	if (l->buffer_active > 0) {
-		remaining = *isamp - idone;
-		zero_cross = find_next_zero_crossing(ibuf, remaining);
-		if (zero_cross) {
-			max = find_max_overflow(ibuf, zero_cross, l->threshold);
-			buffer_max = find_max_overflow(l->position, l->position + l->buffer_active, l->threshold);
-			/* Find max of max */
-			if (buffer_max) {
-				if (max) {
-					if (abs(*buffer_max) > abs(*max))
-						max = buffer_max;
-				} else
-					max = buffer_max;
-			}
-
-			if (max) {
-				l->actions++;
-				l->gain = (double)l->threshold / (double)abs(*max);
-				/* Process our buffer */
-				for (; odone < *osamp && l->position < l->position + l->buffer_active;
-				     odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = (double)(*l->position) * l->gain;
-				/* Process in buffer */
-				for (; odone < *osamp && idone < *isamp && ibuf < zero_cross; odone++, obuf++, idone++, ibuf++)
-					*obuf = (double)(*ibuf) * l->gain;
-			} else {
-				l->gain = 1.0f;
-				/* Process our buffer */
-				for (; odone < *osamp && l->position < l->position + l->buffer_active;
-				     odone++, l->position++, obuf++, l->buffer_active--)
-					*obuf = *(l->position);
-				/* Process in buffer */
-				for (; odone < *osamp && idone < *isamp && ibuf < zero_cross; odone++, obuf++, idone++, ibuf++)
-					*obuf = *ibuf;
-			}
-		}
-
-		*isamp = idone;
-		*osamp = odone;
-		return SOX_SUCCESS;
-	}
-
-	/* Process in buffer only */
-	remaining = *isamp - idone;
-	zero_cross = find_next_zero_crossing(ibuf, remaining);
-	while (idone < *isamp && odone < *osamp && zero_cross) {
-		max = find_max_overflow(ibuf, zero_cross, l->threshold);
+	zero_cross = find_next_zero_crossing(
+		ring_buffer_get_start_unprocessed(buffer),
+		ring_buffer_get_unprocessed(buffer));
+	while (zero_cross) {
+		l->slices++;
+		max = find_max_overflow(ring_buffer_get_start_unprocessed(buffer), zero_cross, l->threshold);
 		if (max) {
 			l->actions++;
 			l->gain = (double)l->threshold / (double)abs(*max);
-			for (; ibuf < zero_cross && idone < *isamp && odone < *osamp; ibuf++, obuf++, idone++, odone++)
-				*obuf = (double)(*ibuf) * l->gain;
-		} else {
-			l->gain = 1.0f;
-			for (; ibuf < zero_cross && idone < *isamp && odone < *osamp; ibuf++, obuf++, idone++, odone++)
-				*obuf = *ibuf;
-		}
+			for (index = ring_buffer_get_start_unprocessed(buffer); index < zero_cross; index++)
+				*index = (double)(*index) * l->gain;
+		} else l->gain = 1.0f;
+		ring_buffer_mark_processed(buffer, zero_cross - ring_buffer_get_start_unprocessed(buffer));
+		zero_cross = find_next_zero_crossing(
+			ring_buffer_get_start_unprocessed(buffer),
+			ring_buffer_get_unprocessed(buffer));
+	}
+}
 
-		remaining = *isamp - idone;
-		zero_cross = find_next_zero_crossing(ibuf, remaining);
+static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * obuf, size_t * isamp, size_t * osamp)
+{
+	limiter_t *l = (limiter_t *) effp->priv;
+	ring_buffer_t *buffer = l->rbuffer;
+	size_t idone, odone;
+
+	idone = odone = 0;
+
+	/* Copy processed buffer to output */
+	if (buffer->processed > 0) {
+		odone = min(buffer->processed, *osamp);
+		memcpy(obuf, ring_buffer_read(buffer, odone), odone);
+		ring_buffer_pop(buffer, odone);
 	}
 
-	/* Safe check */
-	if (l->buffer_active != 0 && idone < *isamp) {
-		lsx_fail("Can't save input data, buffer not empty");
+	/* Copy in buffer to our buffer */
+	idone = min(ring_buffer_get_free(buffer), *isamp);
+	if (ring_buffer_write(buffer, ibuf, idone) == -1) {
+		lsx_fail("Can't save input data, buffer full");
 		return SOX_EOF;
 	}
 
-	/* Copy ibuf to buffer for next run */
-	if (remaining < l->buffer_size && l->buffer_active == 0) {
-		memcpy(l->buffer, ibuf, remaining * sizeof(ibuf));
-		l->buffer_active = remaining;
-		l->position = l->buffer;
-	} else
-		*isamp = idone;
+	/* Process our buffer */
+	process_our_buffer(buffer, l);
 
+	*isamp = idone;
 	*osamp = odone;
-
 	return SOX_SUCCESS;
 }
 
 static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 {
-	size_t i;
 	limiter_t *l = (limiter_t *) effp->priv;
+	ring_buffer_t *buffer = l->rbuffer;
+	size_t odone;
 
-	if (l->buffer_active < *osamp) {
-		for (i = 0; i < l->buffer_active; i++, obuf++)
-			*obuf = (double)(l->position[i]) * l->gain;
-		*osamp = i;
-		return SOX_EOF;
+	odone = 0;
+
+	/* Copy processed buffer to output */
+	if (buffer->processed > 0) {
+		odone = min(buffer->processed, *osamp);
+		memcpy(obuf, ring_buffer_read(buffer, odone), odone);
+		ring_buffer_pop(buffer, odone);
 	}
 
-	lsx_fail("Internal buffer too big in drain");
-	return -SOX_ENOTSUP;
+	/* Process our buffer */
+	process_our_buffer(buffer, l);
+
+	if (buffer->processed > 0) return SOX_SUCCESS;
+	else return SOX_EOF;
 }
 
 static int stop(sox_effect_t * effp)
 {
 	limiter_t *l = (limiter_t *) effp->priv;
 
-	free(l->buffer);
+	delete_ring_buffer(l->rbuffer);
 
 	lsx_report("We have lowered gain %u times", l->actions);
+	lsx_report("We have sliced %u times", l->slices);
 
 	return SOX_SUCCESS;
 }
