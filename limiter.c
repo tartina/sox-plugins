@@ -56,7 +56,7 @@ typedef struct {
 static ring_buffer_t *create_ring_buffer(const size_t requested_size /* in bytes */)
 {
 	int fd;
-	void *the_data, *address;
+	uint8_t *the_data, *address;
 	ring_buffer_t *the_buffer;
 	char file_name[] = "/tmp/lim-XXXXXX";
 
@@ -104,7 +104,7 @@ static ring_buffer_t *create_ring_buffer(const size_t requested_size /* in bytes
 		the_buffer->size = requested_size / sizeof(sox_sample_t);
 		the_buffer->available = 0;
 		the_buffer->processed = 0;
-		the_buffer->position = the_data;
+		the_buffer->position = (sox_sample_t *)the_data;
 	} else munmap(the_data, requested_size * 2);
 
 	return the_buffer;
@@ -114,16 +114,16 @@ static void delete_ring_buffer(ring_buffer_t *buffer)
 	munmap(buffer->data, buffer->size * 2 * sizeof(sox_sample_t));
 	free(buffer);
 }
-static int ring_buffer_write(ring_buffer_t* const buffer, const sox_sample_t *input, size_t count)
+static int ring_buffer_write(ring_buffer_t* const buffer, const sox_sample_t *input, const size_t count)
 {
 	sox_sample_t *destination;
 
 	if (count == 0) return 0; /* Nothing to do */
 	if (count > (buffer->size - buffer->available)) return -1;
 
-	destination = buffer->position + buffer->available * sizeof(sox_sample_t);
-	if (destination >= buffer->data + buffer->size * sizeof(sox_sample_t))
-		destination -= buffer->size * sizeof(sox_sample_t);
+	destination = buffer->position + buffer->available;
+	if (destination >= buffer->data + buffer->size)
+		destination -= buffer->size;
 	buffer->available += count;
 
 	memcpy(destination, input, count * sizeof(sox_sample_t));
@@ -146,12 +146,12 @@ static sox_sample_t *ring_buffer_read(const ring_buffer_t* const buffer, size_t 
 static int ring_buffer_pop(ring_buffer_t* const buffer, size_t count)
 {
 	if (count > buffer->processed) return -1;
-	buffer->position += count * sizeof(sox_sample_t);
+	buffer->position += count;
 	buffer->available -= count;
 	buffer->processed -= count;
 
-	if (buffer->position >= buffer->data + buffer->size * sizeof(sox_sample_t))
-		buffer->position -= buffer->size * sizeof(sox_sample_t);
+	if (buffer->position >= buffer->data + buffer->size)
+		buffer->position -= buffer->size;
 	return 0;
 }
 /*
@@ -175,7 +175,11 @@ static size_t ring_buffer_get_free(const ring_buffer_t* const buffer)
 */
 static sox_sample_t *ring_buffer_get_start_unprocessed(const ring_buffer_t* const buffer)
 {
-	return buffer->position + buffer->processed * sizeof(sox_sample_t);
+	sox_sample_t *result;
+	result = buffer->position + buffer->processed;
+	if(result >= buffer->data + buffer->size)
+	result -= buffer->size;
+	return result;
 }
 /*
 	Get unprocessed buffer size
@@ -219,7 +223,7 @@ static int start(sox_effect_t * effp)
 
 	/* This limiter works only with 2 channels */
 	if (effp->out_signal.channels != NUMBER_OF_CHANNELS) {
-		lsx_fail("This limiter works only with NUMBER_OF_CHANNELS channels audio");
+		lsx_fail("This limiter works only with 2 channels audio");
 		return SOX_EOF;
 	}
 
@@ -265,7 +269,7 @@ static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, si
 		if ((*zero_crossing) < 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) > 0) {
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
 			fake = 0;
-			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; k++) {
+			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; ++k) {
 				if (abs(*k) > MAX_ZERO_CROSSING_VALUE) {
 					fake = 1;
 					break;
@@ -289,7 +293,7 @@ static const sox_sample_t *find_max_overflow(const sox_sample_t * ibuf, const so
 	const sox_sample_t *max = NULL;
 	sox_sample_t current_value = 0, max_value = 0;
 
-	for (overflow = ibuf; overflow < end; overflow++) {
+	for (overflow = ibuf; overflow < end; ++overflow) {
 		current_value = abs(*overflow);
 		if (current_value > limit && current_value > max_value) {
 			max_value = current_value;
@@ -310,12 +314,12 @@ static void process_our_buffer(ring_buffer_t* const buffer, limiter_t* const l)
 		ring_buffer_get_start_unprocessed(buffer),
 		ring_buffer_get_unprocessed(buffer));
 	while (zero_cross) {
-		l->slices++;
+		++(l->slices);
 		max = find_max_overflow(ring_buffer_get_start_unprocessed(buffer), zero_cross, l->threshold);
 		if (max) {
-			l->actions++;
+			++(l->actions);
 			l->gain = (double)l->threshold / (double)abs(*max);
-			for (index = ring_buffer_get_start_unprocessed(buffer); index < zero_cross; index++)
+			for (index = ring_buffer_get_start_unprocessed(buffer); index < zero_cross; ++index)
 				*index = (double)(*index) * l->gain;
 		} else l->gain = 1.0f;
 		ring_buffer_mark_processed(buffer, zero_cross - ring_buffer_get_start_unprocessed(buffer));
@@ -360,6 +364,8 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 	limiter_t *l = (limiter_t *) effp->priv;
 	ring_buffer_t *buffer = l->rbuffer;
 	size_t odone;
+	sox_sample_t *index;
+	size_t i;
 
 	odone = 0;
 
@@ -374,7 +380,16 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 	process_our_buffer(buffer, l);
 
 	if (buffer->processed > 0) return SOX_SUCCESS;
-	else return SOX_EOF;
+
+	/* Process remaining data using current gain */
+	if (buffer->available > 0) {
+		for (i = buffer->available, index = ring_buffer_get_start_unprocessed(buffer);
+			i; --i, ++index) *index = (double)(*index) * l->gain;
+		buffer->processed = buffer->available;
+		return SOX_SUCCESS;
+	}
+
+	return SOX_EOF;
 }
 
 static int stop(sox_effect_t * effp)
