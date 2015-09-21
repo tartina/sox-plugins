@@ -34,7 +34,7 @@
 /* Define ZERO_CROSSING_CHECK_OTHER_CHANNELS if you want to check the other channel(s) for ZERO CROSSING detection */
 #define ZERO_CROSSING_CHECK_OTHER_CHANNELS
 /* If checking the other channels(s), they must be less than this values to be a ZERO CROSSING (-40 dB) */
-#define MAX_ZERO_CROSSING_VALUE (0.01f * SOX_SAMPLE_MAX)
+static const sox_sample_t MAX_ZERO_CROSSING_VALUE = (0.01f * SOX_SAMPLE_MAX);
 
 // Ring buffer
 typedef struct {
@@ -177,8 +177,7 @@ static sox_sample_t *ring_buffer_get_start_unprocessed(const ring_buffer_t* cons
 {
 	sox_sample_t *result;
 	result = buffer->position + buffer->processed;
-	if(result >= buffer->data + buffer->size)
-	result -= buffer->size;
+	if(result >= buffer->data + buffer->size) result -= buffer->size;
 	return result;
 }
 /*
@@ -264,9 +263,9 @@ static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, si
 
 	if (size == 0) return NULL;
 
-	for (zero_crossing = ibuf + NUMBER_OF_CHANNELS, i = NUMBER_OF_CHANNELS;
+	for (zero_crossing = ibuf, i = NUMBER_OF_CHANNELS;
 	     i < (size / NUMBER_OF_CHANNELS); i += NUMBER_OF_CHANNELS, zero_crossing += NUMBER_OF_CHANNELS) {
-		if ((*zero_crossing) < 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) > 0) {
+		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) > 0) {
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
 			fake = 0;
 			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; ++k) {
@@ -277,7 +276,7 @@ static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, si
 			}
 			if (!fake) {
 #endif
-			result = zero_crossing;
+			result = zero_crossing + NUMBER_OF_CHANNELS;
 			break;
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
 			}
@@ -340,7 +339,7 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 	/* Copy processed buffer to output */
 	if (buffer->processed > 0) {
 		odone = min(buffer->processed, *osamp);
-		memcpy(obuf, ring_buffer_read(buffer, odone), odone);
+		if (odone > 0) memcpy(obuf, ring_buffer_read(buffer, odone), odone * sizeof(sox_sample_t));
 		ring_buffer_pop(buffer, odone);
 	}
 
@@ -369,10 +368,12 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 
 	odone = 0;
 
+	return SOX_EOF;
+
 	/* Copy processed buffer to output */
 	if (buffer->processed > 0) {
 		odone = min(buffer->processed, *osamp);
-		memcpy(obuf, ring_buffer_read(buffer, odone), odone);
+		if (odone > 0) memcpy(obuf, ring_buffer_read(buffer, odone), odone * sizeof(sox_sample_t));
 		ring_buffer_pop(buffer, odone);
 	}
 
@@ -384,8 +385,8 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 	/* Process remaining data using current gain */
 	if (buffer->available > 0) {
 		for (i = buffer->available, index = ring_buffer_get_start_unprocessed(buffer);
-			i; --i, ++index) *index = (double)(*index) * l->gain;
-		buffer->processed = buffer->available;
+			i > 0; --i, ++index) *index = (double)(*index) * l->gain;
+		ring_buffer_mark_processed(buffer, buffer->available);
 		return SOX_SUCCESS;
 	}
 
