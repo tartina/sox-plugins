@@ -339,9 +339,12 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 	/* Copy processed buffer to output */
 	if (buffer->processed > 0) {
 		odone = min(buffer->processed, *osamp);
-		if (odone > 0) memcpy(obuf, ring_buffer_read(buffer, odone), odone * sizeof(sox_sample_t));
-		ring_buffer_pop(buffer, odone);
+		if (odone > 0) {
+			memcpy(obuf, ring_buffer_read(buffer, odone), odone * sizeof(sox_sample_t));
+			ring_buffer_pop(buffer, odone);
+		}
 	}
+	*osamp = odone;
 
 	/* Copy in buffer to our buffer */
 	idone = min(ring_buffer_get_free(buffer), *isamp);
@@ -349,12 +352,11 @@ static int flow(sox_effect_t * effp, const sox_sample_t * ibuf, sox_sample_t * o
 		lsx_fail("Can't save input data, buffer full");
 		return SOX_EOF;
 	}
+	*isamp = idone;
 
 	/* Process our buffer */
 	process_our_buffer(buffer, l);
 
-	*isamp = idone;
-	*osamp = odone;
 	return SOX_SUCCESS;
 }
 
@@ -368,7 +370,15 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 
 	odone = 0;
 
-	return SOX_EOF;
+	/* Process our buffer */
+	process_our_buffer(buffer, l);
+
+	/* Process remaining data using current gain */
+	if (buffer->available > 0) {
+		for (i = buffer->available, index = ring_buffer_get_start_unprocessed(buffer);
+			i > 0; --i, ++index) *index = (double)(*index) * l->gain;
+		ring_buffer_mark_processed(buffer, buffer->available);
+	}
 
 	/* Copy processed buffer to output */
 	if (buffer->processed > 0) {
@@ -376,21 +386,9 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 		if (odone > 0) memcpy(obuf, ring_buffer_read(buffer, odone), odone * sizeof(sox_sample_t));
 		ring_buffer_pop(buffer, odone);
 	}
+	*osamp = odone;
 
-	/* Process our buffer */
-	process_our_buffer(buffer, l);
-
-	if (buffer->processed > 0) return SOX_SUCCESS;
-
-	/* Process remaining data using current gain */
-	if (buffer->available > 0) {
-		for (i = buffer->available, index = ring_buffer_get_start_unprocessed(buffer);
-			i > 0; --i, ++index) *index = (double)(*index) * l->gain;
-		ring_buffer_mark_processed(buffer, buffer->available);
-		return SOX_SUCCESS;
-	}
-
-	return SOX_EOF;
+	return SOX_SUCCESS;
 }
 
 static int stop(sox_effect_t * effp)
