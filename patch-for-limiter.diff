@@ -1,8 +1,8 @@
 diff --git a/src/Makefile.am b/src/Makefile.am
-index 4dfceb4..9b53b13 100644
+index 7cceaaf..6724042 100644
 --- a/src/Makefile.am
 +++ b/src/Makefile.am
-@@ -78,7 +78,7 @@ libsox_la_SOURCES += \
+@@ -79,7 +79,7 @@ libsox_la_SOURCES += \
  	remix.c repeat.c reverb.c reverse.c silence.c sinc.c skeleff.c \
  	speed.c splice.c stat.c stats.c stretch.c swap.c \
  	synth.c tempo.c tremolo.c trim.c upsample.c vad.c vol.c \
@@ -12,7 +12,7 @@ index 4dfceb4..9b53b13 100644
      libsox_la_SOURCES += spectrogram.c
  endif
 diff --git a/src/effects.h b/src/effects.h
-index 54ab855..37458cb 100644
+index 450a5c2..c97d5a4 100644
 --- a/src/effects.h
 +++ b/src/effects.h
 @@ -48,6 +48,7 @@
