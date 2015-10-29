@@ -111,7 +111,7 @@ static ring_buffer_t *create_ring_buffer(const size_t requested_size /* in bytes
 }
 static void delete_ring_buffer(ring_buffer_t *buffer)
 {
-	munmap(buffer->data, buffer->size * 2 * sizeof(sox_sample_t));
+	if (buffer) munmap(buffer->data, buffer->size * 2 * sizeof(sox_sample_t));
 	free(buffer);
 }
 static int ring_buffer_write(ring_buffer_t* const buffer, const sox_sample_t *input, const size_t count)
@@ -268,7 +268,7 @@ static const sox_sample_t *find_next_zero_crossing(const sox_sample_t * ibuf, si
 		if ((*zero_crossing) <= 0 && (*(zero_crossing + NUMBER_OF_CHANNELS)) > 0) {
 #ifdef ZERO_CROSSING_CHECK_OTHER_CHANNELS
 			fake = 0;
-			for (k = zero_crossing + 1; k < zero_crossing + NUMBER_OF_CHANNELS; ++k) {
+			for (k = zero_crossing; k < zero_crossing + NUMBER_OF_CHANNELS; ++k) {
 				if (abs(*k) > MAX_ZERO_CROSSING_VALUE) {
 					fake = 1;
 					break;
