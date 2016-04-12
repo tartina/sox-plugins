@@ -10,7 +10,7 @@ a square fade, which I like very much to fade the end of songs.
 
 SoX sources are needed to compile these additional plugins.
 You should add limiter.c to SoX src directory and apply
-the 2 patches provided.
+the 3 patches provided.
 
 These plugins are very experimental (expecially limiter),
 use at your own risk.
