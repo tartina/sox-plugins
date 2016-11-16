@@ -39,18 +39,19 @@ static const sox_sample_t MAX_ZERO_CROSSING_VALUE = (0.01f * SOX_SAMPLE_MAX);
 // Ring buffer
 typedef struct {
 	sox_sample_t *data;
-	size_t size;						/* Total size of buffer in samples */
-	size_t available;				/* Number of samples in the buffer */
-	size_t processed;				/* Number of sample already processede, must be < available */
+	size_t size;			/* Total size of buffer in samples */
+	size_t available;		/* Number of samples in the buffer */
+	size_t processed;		/* Number of sample already processede, must be < available */
 	sox_sample_t *position;	/* Audio buffer actual position */
 } ring_buffer_t;
 
 typedef struct {
 	sox_sample_t threshold;	/* Max level */
-	double gain;						/* Current gain */
+	double gain;			/* Current gain */
 	ring_buffer_t *rbuffer;	/* Audio buffer */
-	uint32_t actions;				/* Number of limiter actions */
-	uint32_t slices;				/* Number of slices found by the zero crossing detector */
+	uint32_t actions;		/* Number of limiter actions */
+	uint32_t slices;		/* Number of slices found by the zero crossing detector */
+	double min_gain;		/* Minimun gain applied */
 } limiter_t;
 
 static ring_buffer_t *create_ring_buffer(const size_t requested_size /* in bytes */)
@@ -229,6 +230,7 @@ static int start(sox_effect_t * effp)
 	l->gain = 1.0f;
 	l->actions = 0;
 	l->slices = 0;
+	l->min_gain = 1.0f;
 
 	/* Allocate the lookahead buffer */
 	buffer_size = LOOKAHEAD_TIME * effp->out_signal.rate * NUMBER_OF_CHANNELS;
@@ -318,6 +320,7 @@ static void process_our_buffer(ring_buffer_t* const buffer, limiter_t* const l)
 		if (max) {
 			++(l->actions);
 			l->gain = (double)l->threshold / (double)abs(*max);
+			if (l->gain < l->min_gain) l->min_gain = l->gain;
 			for (index = ring_buffer_get_start_unprocessed(buffer); index < zero_cross; ++index)
 				*index = (double)(*index) * l->gain;
 		} else l->gain = 1.0f;
@@ -393,12 +396,16 @@ static int drain(sox_effect_t * effp, sox_sample_t * obuf, size_t * osamp)
 
 static int stop(sox_effect_t * effp)
 {
+	double gain_reduction = 0.0f;
+
 	limiter_t *l = (limiter_t *) effp->priv;
 
 	delete_ring_buffer(l->rbuffer);
 
 	lsx_report("We have lowered gain %u times", l->actions);
 	lsx_report("We have sliced %u times", l->slices);
+	if (l->min_gain > 0.0f) gain_reduction = CO_DB(1 / l->min_gain);
+	lsx_report("Max gain reduction: %.1f dB", gain_reduction);
 
 	return SOX_SUCCESS;
 }
